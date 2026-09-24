@@ -873,6 +873,27 @@
           <p>Both COLMAP-style SfM and modern learned geometry models fail for the same reason — not enough shared visual evidence across shots. The bottleneck isn't the reconstruction algorithm. It's the input footage.</p>
         </div>
 
+        <h3>Native video models — single frame + trajectory control</h3>
+        <p>Another class of approach skips multi-view reconstruction entirely: <strong>native video generation models</strong> that take a single input frame and a camera trajectory, then synthesize a video along that path. Trajectory control is specified either through <strong>text prompts</strong> or <strong>keyboard commands</strong> (pan left/right, orbit, etc.).</p>
+        <p>We ran the same Pinga courtyard frame through two such systems to see what a one-image baseline looks like before any panorama stitching:</p>
+
+        <div class="figure-grid cols-3">
+          <figure>
+            <video src="./media/other_methods/bajirao_360_sweep.mp4" controls preload="metadata"></video>
+            <figcaption><strong>LingBot</strong><br>360° sweep from one frame</figcaption>
+          </figure>
+          <figure>
+            <video src="./media/other_methods/baji360%20(1).mp4" controls preload="metadata"></video>
+            <figcaption><strong>HY-World 1.5</strong><br>360° orbit</figcaption>
+          </figure>
+          <figure>
+            <video src="./media/other_methods/bajileft180%20(1).mp4" controls preload="metadata"></video>
+            <figcaption><strong>HY-World 1.5</strong><br>180° pan left</figcaption>
+          </figure>
+        </div>
+
+        <p>These outputs look plausible for a short camera move, but everything beyond the original viewing angle is generated — same fundamental limitation as single-image panorama methods. They are useful baselines; they are not a substitute for building reference views with real coverage of the set.</p>
+
         <h3>Why a single generated view isn't enough either</h3>
         <p>Even world-generation models that skip multi-view input entirely — like HY-World 2.0 with a single image — hit the same wall from a different angle. One frame from the song might show you the front arch and nothing else. The back of the courtyard? Never seen. The left wall? Blocked by a dancer. Run world generation on that and the model just <strong>makes stuff up</strong> — and it'll contradict the next shot in the song.</p>
         <p>We need <strong>four major regions of the set</strong> (front, sides, back) to have real visual evidence <em>before</em> any 3D model touches it. We ran both a single-image and a multi-image approach on the same Pinga courtyard to prove this:</p>
@@ -962,6 +983,11 @@
           <li><strong>Stitch point clouds by hand</strong> — we verified alignment ourselves instead of trusting automatic fusion</li>
           <li><strong>Inpaint remaining gaps</strong> in the stitched equirectangular panorama</li>
         </ol>
+
+        <figure>
+          <img src="./media/03_panorama/depth.png" alt="MoGe v2 depth maps for the four cardinal views used in panorama stitching">
+          <figcaption>MoGe v2 depth for each of the four cardinal views — the metric depth maps we used to align and stitch the point clouds before building the equirectangular panorama.</figcaption>
+        </figure>
 
         <h3>Panorama outputs — same next step, very different starting point</h3>
         <p>Both panoramas went through the <strong>same HY-World 2.0 pipeline</strong>. The difference is what went in.</p>
