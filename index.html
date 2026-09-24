@@ -1,0 +1,1713 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>Reconstructing an Entire Movie Song as a 3D World — Pinga / HY-World 2.0</title>
+  <meta name="description" content="How we turned the Pinga song courtyard from Bajirao Mastani into a walkable 3D set using HY-World 2.0 — frame picking, panorama stitching, camera trajectories, WorldStereo inpainting, and 3D Gaussian Splatting.">
+  <meta name="author" content="Sai Sri Teja Kuppa">
+  <meta property="og:title" content="Reconstructing an Entire Movie Song as a 3D World">
+  <meta property="og:description" content="Turning the Pinga courtyard into a navigable 3D environment from heavily edited music-video frames — and everything that broke along the way.">
+  <meta property="og:type" content="article">
+  <meta property="og:image" content="./media/01_input/panorama.png">
+  <link rel="preconnect" href="https://fonts.googleapis.com">
+  <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+  <link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700&family=JetBrains+Mono:wght@400;500&display=swap" rel="stylesheet">
+  <style>
+    :root {
+      --bg: #fafaf9;
+      --surface: #ffffff;
+      --text: #1c1917;
+      --muted: #78716c;
+      --border: #e7e5e4;
+      --accent: #2563eb;
+      --accent-soft: #eff6ff;
+      --callout-key: #2563eb;
+      --callout-important: #d97706;
+      --callout-observation: #059669;
+      --callout-limitation: #dc2626;
+      --hero-overlay: rgba(28, 25, 23, 0.55);
+      --toc-width: 240px;
+      --article-width: 680px;
+      --nav-height: 52px;
+      --progress-height: 2px;
+      --radius: 8px;
+      --shadow: 0 1px 3px rgba(0,0,0,0.06);
+    }
+
+    *, *::before, *::after { box-sizing: border-box; }
+    html { scroll-behavior: smooth; scroll-padding-top: calc(var(--nav-height) + 24px); }
+
+    body {
+      margin: 0;
+      font-family: 'Inter', system-ui, -apple-system, sans-serif;
+      font-size: 17px;
+      line-height: 1.7;
+      color: var(--text);
+      background: var(--bg);
+      -webkit-font-smoothing: antialiased;
+    }
+
+    /* Progress bar */
+    #reading-progress {
+      position: fixed;
+      top: 0;
+      left: 0;
+      height: var(--progress-height);
+      width: 0%;
+      background: var(--accent);
+      z-index: 200;
+      transition: width 0.1s linear;
+    }
+
+    /* Top nav */
+    .site-nav {
+      position: sticky;
+      top: var(--progress-height);
+      z-index: 100;
+      height: var(--nav-height);
+      display: flex;
+      align-items: center;
+      justify-content: space-between;
+      padding: 0 24px;
+      background: rgba(250, 250, 249, 0.92);
+      backdrop-filter: blur(12px);
+      border-bottom: 1px solid var(--border);
+    }
+    .site-nav a {
+      color: var(--muted);
+      text-decoration: none;
+      font-size: 14px;
+      font-weight: 500;
+      transition: color 0.15s;
+    }
+    .site-nav a:hover { color: var(--text); }
+    .site-nav-links { display: flex; gap: 20px; }
+
+    /* Hero */
+    .hero {
+      position: relative;
+      min-height: 420px;
+      display: flex;
+      align-items: flex-end;
+      overflow: hidden;
+      border-bottom: 1px solid var(--border);
+    }
+    .hero-bg {
+      position: absolute;
+      inset: 0;
+      background: url('./media/01_input/panorama.png') center / cover no-repeat;
+    }
+    .hero-bg::after {
+      content: '';
+      position: absolute;
+      inset: 0;
+      background: linear-gradient(to top, var(--hero-overlay) 0%, rgba(28,25,23,0.3) 60%, rgba(28,25,23,0.15) 100%);
+    }
+    .hero-content {
+      position: relative;
+      z-index: 1;
+      max-width: 900px;
+      margin: 0 auto;
+      padding: 48px 24px 56px;
+      width: 100%;
+      color: #fff;
+    }
+    .hero-label {
+      font-size: 12px;
+      font-weight: 600;
+      letter-spacing: 0.12em;
+      text-transform: uppercase;
+      opacity: 0.85;
+      margin-bottom: 16px;
+    }
+    .hero h1 {
+      font-size: clamp(2rem, 5vw, 3rem);
+      font-weight: 700;
+      line-height: 1.15;
+      margin: 0 0 16px;
+      letter-spacing: -0.02em;
+    }
+    .hero-subtitle {
+      font-size: clamp(1rem, 2.5vw, 1.2rem);
+      opacity: 0.9;
+      max-width: 640px;
+      margin: 0 0 24px;
+      line-height: 1.5;
+    }
+    .hero-meta {
+      font-size: 14px;
+      opacity: 0.75;
+      display: flex;
+      flex-wrap: wrap;
+      gap: 8px 16px;
+    }
+
+    /* Layout */
+    .page-layout {
+      display: grid;
+      grid-template-columns: var(--toc-width) 1fr;
+      max-width: 1200px;
+      margin: 0 auto;
+      gap: 48px;
+      padding: 48px 24px 80px;
+    }
+
+    /* TOC */
+    .toc-desktop {
+      position: sticky;
+      top: calc(var(--nav-height) + 32px);
+      align-self: start;
+      max-height: calc(100vh - var(--nav-height) - 64px);
+      overflow-y: auto;
+    }
+    .toc-desktop h2 {
+      font-size: 11px;
+      font-weight: 600;
+      letter-spacing: 0.1em;
+      text-transform: uppercase;
+      color: var(--muted);
+      margin: 0 0 12px;
+    }
+    .toc-desktop ol {
+      list-style: none;
+      padding: 0;
+      margin: 0;
+    }
+    .toc-desktop li { margin-bottom: 4px; }
+    .toc-desktop a {
+      display: block;
+      padding: 6px 0 6px 12px;
+      font-size: 13px;
+      color: var(--muted);
+      text-decoration: none;
+      border-left: 2px solid transparent;
+      transition: all 0.15s;
+      line-height: 1.4;
+    }
+    .toc-desktop a:hover { color: var(--text); }
+    .toc-desktop a.active {
+      color: var(--accent);
+      border-left-color: var(--accent);
+      font-weight: 500;
+    }
+
+    /* Mobile TOC */
+    .toc-mobile {
+      display: none;
+      margin-bottom: 32px;
+    }
+    .toc-mobile-toggle {
+      width: 100%;
+      padding: 12px 16px;
+      background: var(--surface);
+      border: 1px solid var(--border);
+      border-radius: var(--radius);
+      font-family: inherit;
+      font-size: 14px;
+      font-weight: 500;
+      color: var(--text);
+      cursor: pointer;
+      text-align: left;
+      display: flex;
+      justify-content: space-between;
+      align-items: center;
+    }
+    .toc-mobile-toggle:focus-visible { outline: 2px solid var(--accent); outline-offset: 2px; }
+    .toc-mobile-panel {
+      display: none;
+      margin-top: 8px;
+      padding: 12px 16px;
+      background: var(--surface);
+      border: 1px solid var(--border);
+      border-radius: var(--radius);
+    }
+    .toc-mobile-panel.open { display: block; }
+    .toc-mobile-panel ol {
+      list-style: none;
+      padding: 0;
+      margin: 0;
+    }
+    .toc-mobile-panel a {
+      display: block;
+      padding: 8px 0;
+      font-size: 14px;
+      color: var(--muted);
+      text-decoration: none;
+    }
+    .toc-mobile-panel a:hover { color: var(--accent); }
+
+    /* Article */
+    article {
+      max-width: var(--article-width);
+      min-width: 0;
+      overflow-x: hidden;
+    }
+    article > section { margin-bottom: 64px; }
+    article h2 {
+      font-size: 1.75rem;
+      font-weight: 700;
+      letter-spacing: -0.02em;
+      margin: 0 0 20px;
+      line-height: 1.25;
+      scroll-margin-top: calc(var(--nav-height) + 24px);
+    }
+    article h3 {
+      font-size: 1.25rem;
+      font-weight: 600;
+      margin: 36px 0 12px;
+      letter-spacing: -0.01em;
+    }
+    article h4 {
+      font-size: 1.05rem;
+      font-weight: 600;
+      margin: 28px 0 10px;
+    }
+    article p { margin: 0 0 16px; }
+    article ul, article ol { margin: 0 0 16px; padding-left: 24px; }
+    article li { margin-bottom: 6px; }
+    article a { color: var(--accent); text-decoration: none; }
+    article a:hover { text-decoration: underline; }
+    article strong { font-weight: 600; }
+    article code {
+      font-family: 'JetBrains Mono', monospace;
+      font-size: 0.85em;
+      background: #f5f5f4;
+      padding: 2px 6px;
+      border-radius: 4px;
+      border: 1px solid var(--border);
+    }
+
+    .section-num {
+      display: block;
+      font-size: 12px;
+      font-weight: 600;
+      letter-spacing: 0.08em;
+      color: var(--accent);
+      margin-bottom: 8px;
+    }
+
+    /* Callouts */
+    .callout {
+      padding: 16px 20px;
+      border-radius: var(--radius);
+      margin: 24px 0;
+      border-left: 3px solid;
+      font-size: 15px;
+    }
+    .callout-label {
+      font-size: 11px;
+      font-weight: 700;
+      letter-spacing: 0.08em;
+      text-transform: uppercase;
+      margin-bottom: 6px;
+    }
+    .callout.key { background: var(--accent-soft); border-color: var(--callout-key); }
+    .callout.key .callout-label { color: var(--callout-key); }
+    .callout.important { background: #fffbeb; border-color: var(--callout-important); }
+    .callout.important .callout-label { color: var(--callout-important); }
+    .callout.observation { background: #ecfdf5; border-color: var(--callout-observation); }
+    .callout.observation .callout-label { color: var(--callout-observation); }
+    .callout.limitation { background: #fef2f2; border-color: var(--callout-limitation); }
+    .callout.limitation .callout-label { color: var(--callout-limitation); }
+    .callout p:last-child { margin-bottom: 0; }
+
+    /* Pipeline diagram */
+    .pipeline {
+      background: var(--surface);
+      border: 1px solid var(--border);
+      border-radius: var(--radius);
+      padding: 28px 24px;
+      margin: 28px 0;
+      box-shadow: var(--shadow);
+    }
+    .pipeline-flow {
+      display: flex;
+      flex-direction: column;
+      align-items: center;
+      gap: 0;
+    }
+    .pipeline-step {
+      background: var(--bg);
+      border: 1px solid var(--border);
+      border-radius: var(--radius);
+      padding: 10px 20px;
+      font-size: 14px;
+      font-weight: 500;
+      text-align: center;
+      width: 100%;
+      max-width: 320px;
+    }
+    .pipeline-step.highlight {
+      background: var(--accent-soft);
+      border-color: var(--accent);
+      color: var(--accent);
+    }
+    .pipeline-arrow {
+      color: var(--muted);
+      font-size: 18px;
+      padding: 4px 0;
+      line-height: 1;
+    }
+
+    /* Tables */
+    .table-wrap {
+      overflow-x: auto;
+      margin: 24px 0;
+      border: 1px solid var(--border);
+      border-radius: var(--radius);
+      background: var(--surface);
+    }
+    table {
+      width: 100%;
+      border-collapse: collapse;
+      font-size: 14px;
+    }
+    th, td {
+      padding: 10px 14px;
+      text-align: left;
+      border-bottom: 1px solid var(--border);
+    }
+    th {
+      background: var(--bg);
+      font-weight: 600;
+      font-size: 12px;
+      text-transform: uppercase;
+      letter-spacing: 0.04em;
+      color: var(--muted);
+    }
+    tr:last-child td { border-bottom: none; }
+
+    /* Figures */
+    figure {
+      margin: 28px 0;
+    }
+    figure img, figure video {
+      width: 100%;
+      height: auto;
+      display: block;
+      border-radius: var(--radius);
+      border: 1px solid var(--border);
+      background: #111;
+    }
+    figcaption {
+      font-size: 13px;
+      color: var(--muted);
+      text-align: center;
+      margin-top: 10px;
+      line-height: 1.5;
+    }
+    .figure-grid {
+      display: grid;
+      gap: 16px;
+      margin: 24px 0;
+      width: 100%;
+      max-width: 100%;
+    }
+    .figure-grid > * { min-width: 0; }
+    .figure-grid.cols-2 { grid-template-columns: repeat(2, minmax(0, 1fr)); }
+    .figure-grid.cols-3 { grid-template-columns: repeat(3, minmax(0, 1fr)); }
+    .figure-grid.cols-4 { grid-template-columns: repeat(4, minmax(0, 1fr)); }
+    .figure-grid.stack { grid-template-columns: 1fr; }
+    .figure-grid figure { margin: 0; }
+    .figure-grid .media-label {
+      font-size: 13px;
+      font-weight: 600;
+      margin-bottom: 8px;
+      text-align: center;
+    }
+    .figure-grid video {
+      width: 100%;
+      max-width: 100%;
+      height: auto;
+      display: block;
+      border-radius: var(--radius);
+      border: 1px solid var(--border);
+      background: #111;
+      aspect-ratio: 16 / 9;
+      object-fit: contain;
+    }
+    .figure-grid.stack .media-block {
+      width: 100%;
+      max-width: 100%;
+      min-width: 0;
+    }
+    .figure-grid.stack .media-block + .media-block {
+      margin-top: 8px;
+    }
+    .figure-wide {
+      margin-left: calc(-1 * min(120px, 15vw));
+      margin-right: calc(-1 * min(120px, 15vw));
+      max-width: none;
+    }
+    .figure-wide figure img,
+    .figure-wide figure video {
+      border-radius: var(--radius);
+    }
+
+    /* Lightbox */
+    article img.lightbox-trigger {
+      cursor: zoom-in;
+      transition: opacity 0.15s, box-shadow 0.15s;
+    }
+    article img.lightbox-trigger:hover {
+      opacity: 0.92;
+      box-shadow: 0 4px 20px rgba(0,0,0,0.12);
+    }
+    .lightbox {
+      position: fixed;
+      inset: 0;
+      z-index: 1000;
+      display: none;
+      align-items: center;
+      justify-content: center;
+      padding: 24px;
+    }
+    .lightbox.open { display: flex; }
+    .lightbox-backdrop {
+      position: absolute;
+      inset: 0;
+      background: rgba(15, 14, 13, 0.88);
+      cursor: zoom-out;
+    }
+    .lightbox-inner {
+      position: relative;
+      z-index: 1;
+      display: flex;
+      flex-direction: column;
+      align-items: center;
+      max-width: min(95vw, 1400px);
+      max-height: 92vh;
+    }
+    .lightbox-inner img {
+      max-width: 95vw;
+      max-height: calc(92vh - 48px);
+      width: auto;
+      height: auto;
+      object-fit: contain;
+      border-radius: var(--radius);
+      box-shadow: 0 8px 40px rgba(0,0,0,0.4);
+    }
+    .lightbox-caption {
+      margin: 12px 0 0;
+      font-size: 14px;
+      color: rgba(255,255,255,0.75);
+      text-align: center;
+      max-width: 640px;
+      line-height: 1.5;
+    }
+    .lightbox-close {
+      position: fixed;
+      top: 16px;
+      right: 16px;
+      z-index: 1001;
+      width: 40px;
+      height: 40px;
+      border: 1px solid rgba(255,255,255,0.2);
+      border-radius: 50%;
+      background: rgba(0,0,0,0.5);
+      color: #fff;
+      font-size: 22px;
+      line-height: 1;
+      cursor: pointer;
+      display: flex;
+      align-items: center;
+      justify-content: center;
+      transition: background 0.15s;
+    }
+    .lightbox-close:hover { background: rgba(0,0,0,0.75); }
+    .lightbox-close:focus-visible { outline: 2px solid #fff; outline-offset: 2px; }
+    body.lightbox-open { overflow: hidden; }
+
+    /* Code blocks */
+    .code-block {
+      position: relative;
+      margin: 24px 0;
+      border-radius: var(--radius);
+      overflow: hidden;
+      border: 1px solid var(--border);
+      background: #1c1917;
+    }
+    .code-block pre {
+      margin: 0;
+      padding: 16px 20px;
+      overflow-x: auto;
+      font-family: 'JetBrains Mono', monospace;
+      font-size: 13px;
+      line-height: 1.6;
+      color: #e7e5e4;
+    }
+    .copy-btn {
+      position: absolute;
+      top: 8px;
+      right: 8px;
+      padding: 4px 10px;
+      font-size: 11px;
+      font-family: inherit;
+      font-weight: 500;
+      background: rgba(255,255,255,0.1);
+      color: #a8a29e;
+      border: 1px solid rgba(255,255,255,0.15);
+      border-radius: 4px;
+      cursor: pointer;
+      transition: all 0.15s;
+    }
+    .copy-btn:hover { background: rgba(255,255,255,0.18); color: #fff; }
+    .copy-btn:focus-visible { outline: 2px solid var(--accent); }
+
+    /* Video embed */
+    .video-embed {
+      position: relative;
+      width: 100%;
+      max-width: 720px;
+      margin: 24px 0;
+      aspect-ratio: 16/9;
+      border-radius: var(--radius);
+      overflow: hidden;
+      border: 1px solid var(--border);
+    }
+    .video-embed iframe {
+      position: absolute;
+      inset: 0;
+      width: 100%;
+      height: 100%;
+      border: 0;
+    }
+
+    /* Visual cards (scene assembly) */
+    .visual-card {
+      background: var(--surface);
+      border: 1px solid var(--border);
+      border-radius: var(--radius);
+      overflow: hidden;
+      box-shadow: var(--shadow);
+    }
+    .visual-card img {
+      width: 100%;
+      display: block;
+      background: #111;
+    }
+    .visual-card-body {
+      padding: 16px 20px;
+    }
+    .visual-card-body h4 {
+      margin: 0 0 6px;
+      font-size: 15px;
+    }
+    .visual-card-body p {
+      margin: 0;
+      font-size: 14px;
+      color: var(--muted);
+    }
+    .assembly-flow {
+      display: flex;
+      align-items: center;
+      justify-content: center;
+      gap: 12px;
+      flex-wrap: wrap;
+      margin: 32px 0;
+      font-size: 14px;
+      color: var(--muted);
+    }
+    .assembly-flow .arrow { color: var(--accent); font-weight: 600; }
+
+    /* References */
+    .references {
+      margin-top: 64px;
+      padding-top: 40px;
+      border-top: 1px solid var(--border);
+    }
+    .references h2 {
+      font-size: 1.25rem;
+      font-weight: 600;
+      margin: 0 0 20px;
+      letter-spacing: -0.01em;
+    }
+    .ref-list {
+      list-style: none;
+      padding: 0;
+      margin: 0;
+      counter-reset: refs;
+    }
+    .ref-item {
+      counter-increment: refs;
+      padding: 14px 0;
+      border-bottom: 1px solid var(--border);
+      display: grid;
+      grid-template-columns: auto 1fr;
+      gap: 4px 12px;
+    }
+    .ref-item:last-child { border-bottom: none; }
+    .ref-item::before {
+      content: "[" counter(refs) "]";
+      font-size: 13px;
+      font-weight: 600;
+      color: var(--muted);
+      font-family: 'JetBrains Mono', monospace;
+    }
+    .ref-label {
+      font-weight: 600;
+      font-size: 15px;
+      grid-column: 2;
+    }
+    .ref-desc {
+      font-size: 14px;
+      color: var(--muted);
+      grid-column: 2;
+    }
+    .ref-link {
+      grid-column: 2;
+      font-size: 13px;
+      font-family: 'JetBrains Mono', monospace;
+      color: var(--accent);
+      text-decoration: none;
+      word-break: break-all;
+    }
+    .ref-link:hover { text-decoration: underline; }
+
+    /* Footer */
+    .article-footer {
+      margin-top: 64px;
+      padding-top: 32px;
+      border-top: 1px solid var(--border);
+      text-align: center;
+      color: var(--muted);
+      font-size: 15px;
+    }
+    .article-footer a {
+      color: var(--accent);
+      text-decoration: none;
+      font-weight: 500;
+    }
+    .article-footer a:hover { text-decoration: underline; }
+
+    /* Responsive */
+    @media (max-width: 960px) {
+      .page-layout {
+        grid-template-columns: 1fr;
+        padding: 32px 20px 64px;
+      }
+      .toc-desktop { display: none; }
+      .toc-mobile { display: block; }
+      .figure-wide {
+        margin-left: 0;
+        margin-right: 0;
+      }
+      .figure-grid.cols-3,
+      .figure-grid.cols-4 { grid-template-columns: repeat(2, 1fr); }
+    }
+    @media (max-width: 600px) {
+      body { font-size: 16px; }
+      article h2 { font-size: 1.5rem; }
+      .figure-grid.cols-2,
+      .figure-grid.cols-3,
+      .figure-grid.cols-4 { grid-template-columns: 1fr; }
+      .hero { min-height: 360px; }
+      .site-nav { padding: 0 16px; }
+    }
+  </style>
+</head>
+<body>
+  <div id="reading-progress" aria-hidden="true"></div>
+
+  <nav class="site-nav" aria-label="Site navigation">
+    <a href="https://github.com/saisritejakuppaEros/SyntheticEnvGeneration">← Back to Repository</a>
+    <div class="site-nav-links">
+      <a href="https://github.com/saisritejakuppaEros/SyntheticEnvGeneration" target="_blank" rel="noopener">GitHub</a>
+    </div>
+  </nav>
+
+  <header class="hero">
+    <div class="hero-bg" role="img" aria-label="Stitched panorama of the Pinga courtyard set"></div>
+    <div class="hero-content">
+      <p class="hero-label">Computer Vision · 3D Reconstruction</p>
+      <h1>Reconstructing an Entire Movie Song as a 3D World</h1>
+      <p class="hero-subtitle">How we turned the Pinga song courtyard from <em>Bajirao Mastani</em> into a walkable 3D set — and all the things that broke along the way.</p>
+      <div class="hero-meta">
+        <span>Sai Sri Teja Kuppa</span>
+        <span>September 2026</span>
+        <span>~18 min read</span>
+      </div>
+    </div>
+  </header>
+
+  <div class="page-layout">
+    <aside class="toc-desktop" aria-label="Table of contents">
+      <h2>Contents</h2>
+      <ol id="toc-list">
+        <li><a href="#goal">The Goal</a></li>
+        <li><a href="#movie-frames">Starting From Movie Frames</a></li>
+        <li><a href="#reference-views">Creating Better Reference Views</a></li>
+        <li><a href="#2d-to-3d">From 2D Images to a 3D World</a></li>
+        <li><a href="#reconstruction">Scene Reconstruction</a></li>
+        <li><a href="#movie-set">Building the Movie Set</a></li>
+        <li><a href="#challenges">Challenges &amp; Failures</a></li>
+        <li><a href="#final-result">Final Result</a></li>
+        <li><a href="#future">What Comes Next</a></li>
+        <li><a href="#references">References</a></li>
+      </ol>
+    </aside>
+
+    <article>
+      <nav class="toc-mobile" aria-label="Table of contents">
+        <button class="toc-mobile-toggle" id="toc-toggle" aria-expanded="false" aria-controls="toc-panel">
+          Table of Contents
+          <span aria-hidden="true">▾</span>
+        </button>
+        <div class="toc-mobile-panel" id="toc-panel">
+          <ol>
+            <li><a href="#goal">The Goal</a></li>
+            <li><a href="#movie-frames">Starting From Movie Frames</a></li>
+            <li><a href="#reference-views">Creating Better Reference Views</a></li>
+            <li><a href="#2d-to-3d">From 2D Images to a 3D World</a></li>
+            <li><a href="#reconstruction">Scene Reconstruction</a></li>
+            <li><a href="#movie-set">Building the Movie Set</a></li>
+            <li><a href="#challenges">Challenges &amp; Failures</a></li>
+            <li><a href="#final-result">Final Result</a></li>
+            <li><a href="#future">What Comes Next</a></li>
+            <li><a href="#references">References</a></li>
+          </ol>
+        </div>
+      </nav>
+
+      <!-- Intro -->
+      <section id="intro">
+        <h3 style="margin-top:0;font-size:1.1rem;font-weight:600;">Making video — the reconstructed set</h3>
+        <p>Before diving into the pipeline, here's the end result: a walkthrough of the 3D courtyard we rebuilt from the song footage.</p>
+
+        <div class="video-embed">
+          <iframe src="https://www.youtube.com/embed/y6vCSwf5-DA?start=75" title="Making video — Pinga courtyard 3D reconstruction" allow="accelerometer; autoplay; clipboard-write; encrypted-media; gyroscope; picture-in-picture" allowfullscreen loading="lazy"></iframe>
+        </div>
+        <p style="font-size:14px;color:var(--muted);"><a href="https://www.youtube.com/watch?v=y6vCSwf5-DA&t=75s">Watch on YouTube</a> — making-of video showing the navigable 3D set.</p>
+
+        <p style="margin-top:32px;">This project starts from one music video. The courtyard set in <strong>Pinga</strong> from <em>Bajirao Mastani</em> — stone arches, lanterns, a big tree, performers dancing — is beautiful on screen. We wanted something ambitious: <strong>rebuild that entire set in 3D</strong> so you could move a virtual camera through it, not just stare at one photo.</p>
+
+        <div class="video-embed">
+          <iframe src="https://www.youtube.com/embed/tzRFLMn4kpM" title="Pinga — Bajirao Mastani" allow="accelerometer; autoplay; clipboard-write; encrypted-media; gyroscope; picture-in-picture" allowfullscreen loading="lazy"></iframe>
+        </div>
+        <p style="font-size:14px;color:var(--muted);"><a href="https://www.youtube.com/watch?v=tzRFLMn4kpM">Watch on YouTube</a> — the original song; the courtyard set we reconstructed appears throughout.</p>
+
+        <p>Watch for the hard cuts, close-ups on the performers, and how the camera never sits still long enough to give you a clean multi-view scan of the environment. <strong>That's exactly the problem we're solving.</strong></p>
+
+        <div class="callout key">
+          <div class="callout-label">Key Idea</div>
+          <p>Everything shown here comes from our <code>pinga_set/</code> output folder, built with <strong>HY-World 2.0</strong> (HunyuanWorld). Pipeline code lives in <code>blog_informtion/code/</code> — HY-World stages in <code>code/stages/</code>, panorama generator in <code>code/panogen/</code>.</p>
+        </div>
+      </section>
+
+      <!-- 01 Goal -->
+      <section id="goal">
+        <span class="section-num">01</span>
+        <h2>The Goal</h2>
+        <p><strong>Goal:</strong> One coherent 3D environment reconstructed from an entire song.</p>
+        <p><strong>What we actually have as input:</strong> Hundreds of unrelated 2D frames, most of which are useless for geometry.</p>
+
+        <div class="table-wrap">
+          <table>
+            <thead>
+              <tr><th>What we need</th><th>What a song gives us</th></tr>
+            </thead>
+            <tbody>
+              <tr><td>Overlapping views of the same walls</td><td>Hard cuts to a completely different angle</td></tr>
+              <tr><td>Static scene geometry</td><td>Actors moving through every shot</td></tr>
+              <tr><td>Smooth camera motion</td><td>Jump cuts, zooms, shake</td></tr>
+              <tr><td>Full set visible</td><td>Close-ups where you can't even see the floor</td></tr>
+            </tbody>
+          </table>
+        </div>
+
+        <p>So the real question became:</p>
+        <blockquote style="border-left:3px solid var(--accent);margin:24px 0;padding:12px 20px;color:var(--muted);font-style:italic;">
+          Forget reconstructing every frame. Can we find a handful of frames that, together, show us the whole set?
+        </blockquote>
+        <p>That shift in thinking is basically the whole project.</p>
+      </section>
+
+      <!-- 02 Movie Frames -->
+      <section id="movie-frames">
+        <span class="section-num">02</span>
+        <h2>Starting From Movie Frames</h2>
+        <p>A movie song isn't a clean 360° capture. It's a <strong>heavily edited music video</strong> — hard cuts, close-ups on actors, camera shake, zooms, and shots where 80% of the frame is a person, not the set. The original frames are not sufficient for reconstruction because most of the scene is observed from disjoint viewpoints with incomplete geometry.</p>
+
+        <h3>The standard reconstruction pipeline</h3>
+        <p>The generic, traditional way to build a 3D set from video looks like this:</p>
+
+        <div class="pipeline">
+          <div class="pipeline-flow">
+            <div class="pipeline-step">Video frames</div>
+            <div class="pipeline-arrow">↓</div>
+            <div class="pipeline-step">COLMAP — structure from motion</div>
+            <div class="pipeline-arrow">↓</div>
+            <div class="pipeline-step">Camera poses + sparse point cloud</div>
+            <div class="pipeline-arrow">↓</div>
+            <div class="pipeline-step">NeRF or 3D Gaussian Splatting</div>
+            <div class="pipeline-arrow">↓</div>
+            <div class="pipeline-step highlight">Navigable 3D scene</div>
+          </div>
+        </div>
+
+        <p>COLMAP finds correspondences across frames, estimates where the camera was for each shot, and builds a sparse 3D point cloud. Those poses then feed into NeRF or 3DGS, which densify the representation into something you can render from arbitrary viewpoints. On a smooth walk-through video — a real-estate tour, a drone orbit, a handheld scan — this works well.</p>
+
+        <h3>Why COLMAP breaks on song footage</h3>
+        <p>COLMAP assumes consecutive frames share overlapping views of the same geometry. A Bollywood song violates every assumption in that chain:</p>
+        <ul>
+          <li><strong>Hard cuts</strong> jump to a completely different angle with zero overlap</li>
+          <li><strong>Close-ups</strong> fill the frame with a face, not the set</li>
+          <li><strong>Moving actors</strong> break static-scene correspondence</li>
+          <li><strong>Zooms and shake</strong> add motion that isn't smooth camera travel</li>
+        </ul>
+        <p>We never got a usable sparse reconstruction from raw Pinga footage — there's no COLMAP output in <code>pinga_set</code>. Feature matching fails when shots don't overlap, and even the frames that do match often disagree because the scene content changed between cuts.</p>
+
+        <div class="callout limitation">
+          <div class="callout-label">Limitation</div>
+          <p>COLMAP isn't broken. It's built for continuous capture. Feeding it an edited music video without preprocessing is asking it to solve a problem it was never designed for.</p>
+        </div>
+
+        <h3>Learning-based alternatives — VGGT and Depth Anything V3</h3>
+        <p>Knowing COLMAP wouldn't work out of the box, we went deeper into learning-based geometry methods that don't rely on explicit feature matching.</p>
+        <p><strong>VGGT</strong> (Visual Geometry Grounded Transformer) can predict camera poses and depth directly from images, skipping traditional SfM. We ran it on the raw Pinga song. Results were bad — shots don't overlap, cuts break temporal correspondence, and half the frames are face close-ups. No coherent camera trajectory emerged.</p>
+        <p><strong>Depth Anything V3</strong> was the next attempt — dense monocular depth without needing multi-view overlap. It produces reasonable per-frame depth maps, but depth alone doesn't give you a unified 3D set. Without consistent camera poses tying the frames together, each shot lives in its own coordinate frame. The fundamental problem remains: <strong>the views are too sparse and too non-overlapping</strong> to fuse into one scene.</p>
+
+        <div class="callout observation">
+          <div class="callout-label">Observation</div>
+          <p>Both COLMAP-style SfM and modern learned geometry models fail for the same reason — not enough shared visual evidence across shots. The bottleneck isn't the reconstruction algorithm. It's the input footage.</p>
+        </div>
+
+        <h3>Why a single generated view isn't enough either</h3>
+        <p>Even world-generation models that skip multi-view input entirely — like HY-World 2.0 with a single image — hit the same wall from a different angle. One frame from the song might show you the front arch and nothing else. The back of the courtyard? Never seen. The left wall? Blocked by a dancer. Run world generation on that and the model just <strong>makes stuff up</strong> — and it'll contradict the next shot in the song.</p>
+        <p>We need <strong>four major regions of the set</strong> (front, sides, back) to have real visual evidence <em>before</em> any 3D model touches it. We ran both a single-image and a multi-image approach on the same Pinga courtyard to prove this:</p>
+
+        <div class="table-wrap">
+          <table>
+            <thead>
+              <tr><th></th><th>1 image (<code>songs_set/</code>)</th><th>~4 images (<code>pinga_set/</code>)</th></tr>
+            </thead>
+            <tbody>
+              <tr><td>Input</td><td>One song frame → HY-Pano 2.0</td><td>~4 frames → manual stitch</td></tr>
+              <tr><td>Panorama</td><td>AI hallucinates unseen sides</td><td>Real coverage from multiple angles</td></tr>
+              <tr><td>Downstream 3D</td><td>Full pipeline, weak geometry</td><td>Full pipeline, real evidence</td></tr>
+            </tbody>
+          </table>
+        </div>
+
+        <div class="figure-grid cols-2">
+          <figure>
+            <img src="./media/09_panorama_comparison/single_input.png" alt="Single movie frame — one angle of the courtyard">
+            <figcaption><strong>1 image</strong> — <code>songs_set/side_view.png</code></figcaption>
+          </figure>
+          <figure>
+            <div style="display:grid;grid-template-columns:1fr;gap:2px;border-radius:var(--radius);overflow:hidden;">
+              <img src="./media/09_panorama_comparison/custom_view0_frame.png" alt="View 0 from 4-side stitch" style="border-radius:0;border:none;">
+              <img src="./media/09_panorama_comparison/custom_view1_frame.png" alt="View 1 from 4-side stitch" style="border-radius:0;border:none;">
+              <img src="./media/09_panorama_comparison/custom_view2_frame.png" alt="View 2 from 4-side stitch" style="border-radius:0;border:none;">
+            </div>
+            <figcaption><strong>~4 images</strong> — cardinal views from <code>pinga_set</code> stitch</figcaption>
+          </figure>
+        </div>
+
+        <div class="callout key">
+          <div class="callout-label">Key Idea</div>
+          <p>Every approach we tried — COLMAP, VGGT, Depth Anything V3, single-image generation — fails unless someone first curates the input. The next section is about how we did that.</p>
+        </div>
+      </section>
+
+      <!-- 03 Reference Views -->
+      <section id="reference-views">
+        <span class="section-num">03</span>
+        <h2>Creating Better Reference Views</h2>
+        <p>We stopped asking <em>"can AI reconstruct the whole song?"</em> and started asking <em>"what's the minimum set of good observations we need?"</em> The honest part: <strong>humans pick the frames and verify the geometry</strong>. Models handle the scale work after that.</p>
+
+        <h3>Step 1 — Picking the right frames</h3>
+        <p>Automatic frame selection failed — too many cuts, too many actor shots. So we manually picked about <strong>four complementary views</strong> that together cover the courtyard from different angles.</p>
+
+        <div class="figure-grid cols-3">
+          <figure>
+            <img src="./media/04_keyframes/scene_bin_view0.png" alt="View bin 0 — front region of the courtyard">
+            <figcaption>View 0</figcaption>
+          </figure>
+          <figure>
+            <img src="./media/04_keyframes/scene_bin_view1.png" alt="View bin 1 — side region of the courtyard">
+            <figcaption>View 1</figcaption>
+          </figure>
+          <figure>
+            <img src="./media/04_keyframes/scene_bin_view2.png" alt="View bin 2 — rear/alternate region">
+            <figcaption>View 2</figcaption>
+          </figure>
+        </div>
+        <p>Each bin gets its own camera trajectories later. Unrelated song shots never get mixed together — that's the whole point of binning.</p>
+
+        <h3>Step 2 — Building the panorama</h3>
+        <p>The original framing was often too tight or actor-centric. We therefore introduced an intermediate step to obtain wider, more spatially useful references before stitching.</p>
+
+        <div class="pipeline">
+          <div class="pipeline-flow">
+            <div class="pipeline-step">~4 song frames</div>
+            <div class="pipeline-arrow">↓</div>
+            <div class="pipeline-step">Wider horizontal views</div>
+            <div class="pipeline-arrow">↓</div>
+            <div class="pipeline-step">MoGe v2 depth</div>
+            <div class="pipeline-arrow">↓</div>
+            <div class="pipeline-step">Manual point-cloud stitch</div>
+            <div class="pipeline-arrow">↓</div>
+            <div class="pipeline-step">Inpaint gaps</div>
+            <div class="pipeline-arrow">↓</div>
+            <div class="pipeline-step highlight">panorama.png</div>
+          </div>
+        </div>
+
+        <ol>
+          <li><strong>Pick ~4 frames</strong> from the song — each showing a different part of the courtyard</li>
+          <li><strong>Generate wider horizontal views</strong> where the original framing was too tight or actor-centric</li>
+          <li><strong>Run MoGe v2</strong> for dense metric depth on each view</li>
+          <li><strong>Stitch point clouds by hand</strong> — we verified alignment ourselves instead of trusting automatic fusion</li>
+          <li><strong>Inpaint remaining gaps</strong> in the stitched equirectangular panorama</li>
+        </ol>
+
+        <h3>Panorama outputs — same next step, very different starting point</h3>
+        <p>Both panoramas went through the <strong>same HY-World 2.0 pipeline</strong>. The difference is what went in.</p>
+
+        <div class="figure-grid cols-2">
+          <figure>
+            <img src="./media/09_panorama_comparison/single_panorama_output.png" alt="HY-Pano panorama from single image">
+            <figcaption>❌ <strong>1 image → HY-Pano 2.0</strong><br><code>songs_set/panorama.png</code></figcaption>
+          </figure>
+          <figure>
+            <img src="./media/09_panorama_comparison/custom_panorama_output.png" alt="Custom 4-side stitched panorama">
+            <figcaption>✅ <strong>4 sides → manual stitch</strong><br><code>pinga_set/panorama.png</code></figcaption>
+          </figure>
+        </div>
+
+        <p>Look at the single-image panorama — it <em>looks</em> like a courtyard at first glance. But large sections were <strong>never in the original frame</strong>. HY-Pano invented the back wall, the opposite side, details that may not match other shots in the song. The 4-side version has <strong>photographic evidence</strong> behind each direction.</p>
+
+        <div class="table-wrap">
+          <table>
+            <thead>
+              <tr><th></th><th>1 image (HY-Pano)</th><th>~4 images (custom stitch)</th></tr>
+            </thead>
+            <tbody>
+              <tr><td><strong>What's real</strong></td><td>One viewing angle</td><td>Front, sides, back observed</td></tr>
+              <tr><td><strong>What's generated</strong></td><td>~75% of the panorama</td><td>Only gaps between stitched views</td></tr>
+              <tr><td><strong>Geometry</strong></td><td>Depth guessed from hallucinations</td><td>Depth from MoGe on real frames</td></tr>
+              <tr><td><strong>Matches the song?</strong></td><td>Often contradicts other shots</td><td>Built from frames picked from the song</td></tr>
+              <tr><td><strong>Good for a quick test?</strong></td><td>Yes</td><td>—</td></tr>
+              <tr><td><strong>Good for set reconstruction?</strong></td><td>No — we abandoned this</td><td>Yes — this is what we used</td></tr>
+            </tbody>
+          </table>
+        </div>
+
+        <figure>
+          <img src="./media/03_panorama/input_panorama.png" alt="Final 4-side stitched panorama — HY-World pipeline input">
+          <figcaption>Final pipeline input — <code>pinga_set/panorama.png</code></figcaption>
+        </figure>
+
+        <p>The quick-test alternative — single frame through <strong>HY-Pano 2.0</strong> (<code>code/panogen/</code>) — lives in <code>songs_set/</code>. Fine for prototyping; not what we used for the final reconstruction.</p>
+      </section>
+
+      <!-- 04 2D to 3D -->
+      <section id="2d-to-3d">
+        <span class="section-num">04</span>
+        <h2>From 2D Images to a 3D World</h2>
+        <p>Once we have a trustworthy panorama, HY-World 2.0 takes over. The transition follows a clear chain:</p>
+
+        <div class="pipeline">
+          <div class="pipeline-flow">
+            <div class="pipeline-step">2D reference panorama</div>
+            <div class="pipeline-arrow">↓</div>
+            <div class="pipeline-step">Depth / geometry estimation (MoGe)</div>
+            <div class="pipeline-arrow">↓</div>
+            <div class="pipeline-step">Global point cloud + mesh</div>
+            <div class="pipeline-arrow">↓</div>
+            <div class="pipeline-step">View sampling + camera planning</div>
+            <div class="pipeline-arrow">↓</div>
+            <div class="pipeline-step highlight">3D representation</div>
+          </div>
+        </div>
+
+        <h3>HY-World samples views from the panorama</h3>
+        <p>Stage 1 (<code>traj_generate.py</code>) samples orbit and polar views to build depth banks and plan camera paths.</p>
+
+        <p><strong>Cardinal views</strong> (used as reference frames for trajectories):</p>
+        <div class="figure-grid cols-3">
+          <figure>
+            <img src="./media/02_view_generation/cardinal_view0.png" alt="Cardinal view 0">
+            <figcaption>Cardinal 0</figcaption>
+          </figure>
+          <figure>
+            <img src="./media/02_view_generation/cardinal_view1.png" alt="Cardinal view 1">
+            <figcaption>Cardinal 1</figcaption>
+          </figure>
+          <figure>
+            <img src="./media/02_view_generation/cardinal_view2.png" alt="Cardinal view 2">
+            <figcaption>Cardinal 2</figcaption>
+          </figure>
+        </div>
+
+        <p><strong>Orbit + polar samples</strong> (27 horizontal + 16 vertical views for depth coverage):</p>
+        <div class="figure-grid cols-4">
+          <figure>
+            <img src="./media/02_view_generation/pano_orbit_0000.png" alt="Pano orbit view 0">
+            <figcaption>Orbit 0°</figcaption>
+          </figure>
+          <figure>
+            <img src="./media/02_view_generation/pano_orbit_0013.png" alt="Pano orbit view 180">
+            <figcaption>Orbit ~180°</figcaption>
+          </figure>
+          <figure>
+            <img src="./media/02_view_generation/polar_0000.png" alt="Polar view looking up">
+            <figcaption>Polar up</figcaption>
+          </figure>
+          <figure>
+            <img src="./media/02_view_generation/polar_0008.png" alt="Polar view looking down">
+            <figcaption>Polar down</figcaption>
+          </figure>
+        </div>
+
+        <p>From here HY-World also builds a mesh, detects objects, and plans <strong>33 camera trajectories</strong> across the scene.</p>
+      </section>
+
+      <!-- 05 Reconstruction -->
+      <section id="reconstruction">
+        <span class="section-num">05</span>
+        <h2>Scene Reconstruction</h2>
+
+        <h3>Segmentation + masks</h3>
+        <p>HY-World runs a VLM to figure out what's in the scene — tree, pillars, benches, arches, etc. That drives object-targeted camera paths ("fly toward the tree").</p>
+
+        <div class="figure-grid">
+          <figure>
+            <img src="./media/06_hunyuan_world/segmentation_vis.png" alt="Object segmentation overlay on the panorama">
+            <figcaption>Segmentation (11 objects)</figcaption>
+          </figure>
+          <figure>
+            <img src="./media/06_hunyuan_world/sky_mask.png" alt="Sky mask — white region is sky">
+            <figcaption>Sky mask</figcaption>
+          </figure>
+          <figure>
+            <img src="./media/06_hunyuan_world/point_mask_view0.png" alt="Valid geometry mask for view0">
+            <figcaption>Valid geometry mask</figcaption>
+          </figure>
+        </div>
+        <p>Detected objects: tree, building, door, statue, bench, fence, lamp, sheds, staircase, pillar, trash can.</p>
+
+        <h3>It gets worse downstream</h3>
+        <p>Same pipeline, same camera path (<code>view0/traj0</code>) — only the panorama input changed. Garbage in, garbage out — but it <strong>compounds</strong>. A weak panorama poisons depth, mesh, trajectories, and every inpainted frame.</p>
+
+        <div class="figure-grid cols-2">
+          <figure>
+            <img src="./media/09_panorama_comparison/single_segmentation.png" alt="Segmentation from single-image panorama">
+            <figcaption>1 image → segmentation</figcaption>
+          </figure>
+          <figure>
+            <img src="./media/09_panorama_comparison/custom_segmentation.png" alt="Segmentation from 4-side panorama">
+            <figcaption>4 images → segmentation</figcaption>
+          </figure>
+        </div>
+
+        <div class="figure-grid stack">
+          <div class="media-block">
+            <p class="media-label">1 image → WorldStereo</p>
+            <video src="./media/09_panorama_comparison/single_worldstereo_view0.mp4" controls preload="metadata"></video>
+            <p style="font-size:12px;color:var(--muted);text-align:center;margin-top:6px;"><code>songs_set/view0/traj0</code></p>
+          </div>
+          <div class="media-block">
+            <p class="media-label">4 images → WorldStereo</p>
+            <video src="./media/09_panorama_comparison/custom_worldstereo_view0.mp4" controls preload="metadata"></video>
+            <p style="font-size:12px;color:var(--muted);text-align:center;margin-top:6px;"><code>pinga_set/view0/traj0</code></p>
+          </div>
+        </div>
+
+        <h3>Camera trajectories</h3>
+        <p>At this point we have a 3D mesh of the courtyard. What we actually need is <strong>video</strong>: a sequence of frames shot from many different camera positions, as if someone walked through the set with a camera. For Pinga, HY-World planned <strong>33 trajectories</strong> total — 693 camera poses (33 × 21 frames).</p>
+
+        <figure>
+          <img src="./media/05_camera_trajectories/navmesh_sampling_view.png" alt="Top-down navmesh view showing all planned camera trajectories">
+          <figcaption>All planned paths visualized on the navmesh</figcaption>
+        </figure>
+
+        <h4>Phase A — Simple pans from the panorama</h4>
+        <p>HY-World splits the input panorama into three cardinal views and generates <strong>simple rotation paths</strong> from each one. Each view bin gets up to 3 trajectories:</p>
+        <div class="table-wrap">
+          <table>
+            <thead><tr><th>Trajectory</th><th>Motion</th><th>What you'd see</th></tr></thead>
+            <tbody>
+              <tr><td><code>traj0</code></td><td>Pan right (~120°)</td><td>Camera rotates right from the reference frame</td></tr>
+              <tr><td><code>traj1</code></td><td>Pan left (~120°)</td><td>Camera rotates left</td></tr>
+              <tr><td><code>traj2</code></td><td>Tilt up / aerial</td><td>Camera lifts and looks down slightly</td></tr>
+            </tbody>
+          </table>
+        </div>
+        <p>That's <strong>9 trajectories</strong> (3 views × 3 moves). Paths are checked against the mesh so the camera doesn't clip through geometry.</p>
+
+        <h4>Phase B — Finding objects to look at (VLM + SAM3)</h4>
+        <div class="code-block">
+          <button class="copy-btn" aria-label="Copy code">Copy</button>
+          <pre>Panorama image
+    ↓
+Qwen3-VL (VLM) — "list the objects you'd navigate toward"
+    ↓  →  objects.json (tree, pillar, bench, building, door…)
+SAM3 segmentation — draw a mask around each object
+    ↓  →  target_camera.json (2D/3D position, direction, size per object)
+Navmesh path planning — compute routes on the walkable surface</pre>
+        </div>
+        <p>For Pinga, the top-ranked object was the <strong>tree</strong> (score 0.92, direction: Back). Pillars and benches ranked next.</p>
+
+        <h4>Phase C — Navmesh path planning (four modes)</h4>
+        <div class="table-wrap">
+          <table>
+            <thead><tr><th>Mode</th><th>Question it asks</th><th>Output folders</th><th>Count (Pinga)</th></tr></thead>
+            <tbody>
+              <tr><td><strong>Surround</strong></td><td>"Can we orbit around this object?"</td><td><code>target_tree_0</code>, <code>target_pillar_1</code>…</td><td>8</td></tr>
+              <tr><td><strong>Exploration</strong></td><td>"What if we wander in 8 directions?"</td><td><code>wonder_0</code>, <code>wonder_1</code>, <code>wonder_7</code></td><td>6</td></tr>
+              <tr><td><strong>Reconstruct</strong></td><td>"Can we revisit under-covered areas?"</td><td><code>reconstruct_1</code>, <code>reconstruct_3</code>…</td><td>10</td></tr>
+              <tr><td><strong>Target</strong></td><td>"Walk straight toward each object"</td><td>Planned &amp; saved, not rendered</td><td>—</td></tr>
+            </tbody>
+          </table>
+        </div>
+
+        <div class="figure-grid cols-4">
+          <figure>
+            <img src="./media/05_camera_trajectories/navmesh_exploration_map.png" alt="Exploration navmesh map">
+            <figcaption><strong>Explore</strong><br>8 sectors → wonder_*</figcaption>
+          </figure>
+          <figure>
+            <img src="./media/05_camera_trajectories/navmesh_reconstruct_map.png" alt="Reconstruct navmesh map">
+            <figcaption><strong>Reconstruct</strong><br>reconstruct_*</figcaption>
+          </figure>
+          <figure>
+            <img src="./media/05_camera_trajectories/navmesh_surround_map.png" alt="Surround navmesh map">
+            <figcaption><strong>Surround</strong><br>target_* folders</figcaption>
+          </figure>
+          <figure>
+            <img src="./media/05_camera_trajectories/navmesh_target_map.png" alt="Target navmesh map">
+            <figcaption><strong>Target</strong><br>planned, not rendered</figcaption>
+          </figure>
+        </div>
+
+        <h4>What a trajectory folder contains</h4>
+        <div class="code-block">
+          <button class="copy-btn" aria-label="Copy code">Copy</button>
+          <pre>render_results/view0/traj0/
+├── start_frame.png       ← first frame (conditioning image)
+├── camera.json           ← 21 w2c poses + intrinsics
+├── render.mp4            ← point-cloud splat video (Stage 2)
+├── render_mask.mp4       ← white = holes to fill
+├── worldstereo-memory-dmd_result.mp4  ← inpainted result (Stage 3)
+├── traj_caption.json     ← VLM-written scene description
+└── memory_inputs/        ← panorama references WorldStereo used</pre>
+        </div>
+
+        <h4>Mechanical pipeline — how 33 trajectories are produced</h4>
+        <p>All of this is produced inside <code>traj_generate.py</code> in two major stages. Inventory: 9 cardinal pans + 8 object orbits + 10 reconstruct paths + 6 exploration paths = 33, across 16 folder groups under <code>pinga_set/render_results/</code>.</p>
+
+        <p><strong>Step 0 — Shared setup</strong> (before any trajectory exists):</p>
+        <div class="code-block">
+          <button class="copy-btn" aria-label="Copy code">Copy</button>
+          <pre>panorama.png
+  → MoGe depth prediction        → full_depth_prediction.pt
+  → global point cloud + mesh    → global_pcd.ply, global_mesh.ply
+  → pano_bank (27 orbit samples) → render_results/pano_bank/
+  → polar_bank (16 elevation)    → render_results/polar_bank/</pre>
+        </div>
+        <p>The <strong>navmesh</strong> is built from <code>global_mesh.ply</code> using Recast: mesh surface → walkable triangles → dense graph (<code>NavMeshGraph</code>, sample spacing 0.05 m). Every walking trajectory is constrained to this graph. The camera origin is <code>(0, 0, 0)</code>.</p>
+
+        <p><strong>Stage A — Cardinal rotation trajectories</strong> (9 paths): The equirectangular panorama is split into 3 horizontal look directions at 120° spacing (<code>split_view_num=3</code>). For each split, HY-World renders a pinhole <code>start_frame.png</code> (832×480), projects the global PCD, and applies three motion templates: <code>right-rotation</code>, <code>left-rotation</code>, <code>up-right-aerial</code>. <code>get_c2w()</code> interpolates 20 intermediate poses and queries a KD-tree on the global mesh — trajectories that would clip through geometry are discarded.</p>
+
+        <p><strong>Stage B — Navmesh trajectories</strong> (24 paths): Qwen3-VL lists objects → SAM3 masks → depth lift to 3D anchor points. Four path generators run from the origin via Dijkstra. Every navmesh polyline is converted via B-spline fit (smoothing 0.2–0.5), arc-length resample to <code>nframe=21</code>, and camera frames built with look-at toward object center (surround/reconstruct) or path tangent (exploration).</p>
+
+        <div class="table-wrap">
+          <table>
+            <thead><tr><th>Mode</th><th>Filter</th><th>Pinga result</th></tr></thead>
+            <tbody>
+              <tr><td>Exploration</td><td>Keep top-3 most diverse paths (<code>wonder_topk=3</code>)</td><td>8 candidates → 3 groups (<code>wonder_0</code>, <code>wonder_1</code>, <code>wonder_7</code>)</td></tr>
+              <tr><td>Surround</td><td>Drop trajectories too similar to existing ones (<code>traj_sim_threshold</code>)</td><td>5 object groups, 8 ground paths</td></tr>
+              <tr><td>Reconstruct</td><td>FPS diversity selection (<code>recon_topk=5</code>)</td><td>10 pairs → 5 groups, 10 paths</td></tr>
+              <tr><td>Target</td><td>Planned and saved to navmesh maps</td><td>Not rendered in this run</td></tr>
+            </tbody>
+          </table>
+        </div>
+
+        <p>Unlike <code>view*</code> (fixed cardinal slice), navmesh groups get a fresh panorama slice at the trajectory's starting orientation. Some groups also get a second variant (<code>traj1</code>): aerial lift for <code>target_*</code> and <code>wonder_*</code>, e-loop orbit at endpoint for <code>reconstruct_*</code>.</p>
+
+        <h4>Complete inventory — all 33 output trajectories</h4>
+        <p><strong>Cardinal rotations (9)</strong> — camera fixed, rotation only:</p>
+        <div class="table-wrap">
+          <table>
+            <thead><tr><th>Group</th><th>Traj</th><th><code>camera.json</code> type</th></tr></thead>
+            <tbody>
+              <tr><td><code>view0/</code>, <code>view1/</code>, <code>view2/</code></td><td>traj0, traj1, traj2</td><td><code>right-rotation</code>, <code>left-rotation</code>, <code>up-right-aerial</code></td></tr>
+            </tbody>
+          </table>
+        </div>
+
+        <p><strong>Surround / object orbit (8)</strong> — navmesh walk around VLM-detected object:</p>
+        <div class="table-wrap">
+          <table>
+            <thead><tr><th>Folder</th><th>Object</th><th>Trajs</th></tr></thead>
+            <tbody>
+              <tr><td><code>target_tree_0/</code></td><td>tree, Back</td><td>traj0</td></tr>
+              <tr><td><code>target_tree_4/</code></td><td>tree, Right</td><td>traj0, traj1 (aerial)</td></tr>
+              <tr><td><code>target_pillar_1/</code></td><td>pillar, Left</td><td>traj0, traj1 (aerial)</td></tr>
+              <tr><td><code>target_pillar_2/</code></td><td>pillar, Back</td><td>traj0, traj1 (aerial)</td></tr>
+              <tr><td><code>target_bench_3/</code></td><td>bench, Front</td><td>traj0</td></tr>
+            </tbody>
+          </table>
+        </div>
+
+        <p><strong>Reconstruct (10)</strong> — navmesh walk to under-covered region:</p>
+        <div class="table-wrap">
+          <table>
+            <thead><tr><th>Folder</th><th>Target</th><th>Trajs</th></tr></thead>
+            <tbody>
+              <tr><td><code>reconstruct_1/</code></td><td>tree, Right</td><td>traj0 (approach), traj1 (e-loop)</td></tr>
+              <tr><td><code>reconstruct_3/</code></td><td>structural void</td><td>traj0, traj1</td></tr>
+              <tr><td><code>reconstruct_4/</code></td><td>tree, Front</td><td>traj0, traj1</td></tr>
+              <tr><td><code>reconstruct_8/</code></td><td>pillar, Back</td><td>traj0, traj1</td></tr>
+              <tr><td><code>reconstruct_9/</code></td><td>pillar, Left</td><td>traj0, traj1</td></tr>
+            </tbody>
+          </table>
+        </div>
+
+        <p><strong>Exploration (6)</strong> — outward wander per compass sector:</p>
+        <div class="table-wrap">
+          <table>
+            <thead><tr><th>Folder</th><th>Trajs</th></tr></thead>
+            <tbody>
+              <tr><td><code>wonder_0/</code>, <code>wonder_1/</code>, <code>wonder_7/</code></td><td>traj0 (ground), traj1 (aerial)</td></tr>
+            </tbody>
+          </table>
+        </div>
+
+        <p>All poses are aggregated into <code>render_results/cameras.glb</code> and <code>cameras_navi.glb</code> for 3D inspection. Script: <code>code/stages/01_traj_generate.py</code> · Navmesh: <code>hyworld2/worldgen/src/navi_utils.py</code></p>
+
+        <h3>Filling the holes (WorldStereo inpainting)</h3>
+        <p>HY-World renders each camera path by splatting the point cloud into video frames. Problem: the point cloud is <strong>sparse</strong>. Large chunks of every frame are empty gray holes. <strong>WorldStereo</strong> tries to fill those holes using the panorama as memory.</p>
+
+        <p><strong>The good case — <code>view0</code></strong> (cardinal view, real reference frame):</p>
+        <div class="figure-grid stack">
+          <div class="media-block">
+            <p class="media-label">① Raw render (holes expected)</p>
+            <video src="./media/07_inpainting/view0_render.mp4" controls preload="metadata"></video>
+          </div>
+          <div class="media-block">
+            <p class="media-label">② Hole mask (white = missing)</p>
+            <video src="./media/07_inpainting/view0_render_mask.mp4" controls preload="metadata"></video>
+          </div>
+          <div class="media-block">
+            <p class="media-label">③ WorldStereo result</p>
+            <video src="./media/07_inpainting/view0_worldstereo_result.mp4" controls preload="metadata"></video>
+          </div>
+        </div>
+
+        <p><strong>The bad case — <code>wonder_7</code></strong> (exploration, PCD-only start frame):</p>
+        <div class="figure-grid stack">
+          <div class="media-block">
+            <p class="media-label">① Raw render</p>
+            <video src="./media/07_inpainting/wonder7_render.mp4" controls preload="metadata"></video>
+          </div>
+          <div class="media-block">
+            <p class="media-label">② Hole mask (much bigger)</p>
+            <video src="./media/07_inpainting/wonder7_render_mask.mp4" controls preload="metadata"></video>
+          </div>
+          <div class="media-block">
+            <p class="media-label">③ WorldStereo result (weaker)</p>
+            <video src="./media/07_inpainting/wonder7_worldstereo_result.mp4" controls preload="metadata"></video>
+          </div>
+        </div>
+
+        <div class="callout limitation">
+          <div class="callout-label">Limitation</div>
+          <p>The mask file for <code>wonder_7</code> is ~2.7× larger than <code>view0</code>'s — that's 50–68% of pixels missing in many trajectories. WorldStereo treats the mask as soft guidance (ControlNet-style), not hard inpainting. Combined with sparse geometry and only four panorama memory views, some gray patches survive.</p>
+        </div>
+
+        <h3>Training the final 3D scene (3DGS)</h3>
+        <p>WorldStereo outputs get fed into a <strong>3D Gaussian Splatting</strong> trainer — 787 frames, depth maps, normals, 8000 training steps. Output: a navigable radiance field you can render from any angle.</p>
+
+        <div class="table-wrap">
+          <table>
+            <thead><tr><th>Output</th><th>Size</th><th>What it is</th></tr></thead>
+            <tbody>
+              <tr><td><code>global_mesh.ply</code></td><td>82 MB</td><td>Stage-1 mesh (primary mesh for now)</td></tr>
+              <tr><td><code>point_cloud_7999.ply</code></td><td>123 MB</td><td>Trained 3DGS point cloud</td></tr>
+              <tr><td><code>ckpt_7999_rank0.pt</code></td><td>171 MB</td><td>Training checkpoint</td></tr>
+            </tbody>
+          </table>
+        </div>
+
+        <p><strong>3DGS frame count:</strong> 33 trajectories × 21 frames = 693, plus 54 pano_bank + 40 polar_bank = <strong>787 images</strong> in <code>gs_data/images/</code>.</p>
+      </section>
+
+      <!-- 06 Movie Set -->
+      <section id="movie-set">
+        <span class="section-num">06</span>
+        <h2>Building the Movie Set</h2>
+        <p>Individual reconstructed elements become a coherent movie environment through a staged assembly. Here's the progression:</p>
+
+        <div class="assembly-flow">
+          <span>Reference Images</span>
+          <span class="arrow">→</span>
+          <span>Intermediate Representations</span>
+          <span class="arrow">→</span>
+          <span>3D Components</span>
+          <span class="arrow">→</span>
+          <span>Complete Scene</span>
+        </div>
+
+        <div class="pipeline">
+          <div class="pipeline-flow">
+            <div class="pipeline-step">Movie Song</div>
+            <div class="pipeline-arrow">↓</div>
+            <div class="pipeline-step">~4 keyframe views (manual)</div>
+            <div class="pipeline-arrow">↓</div>
+            <div class="pipeline-step highlight">panorama.png</div>
+            <div class="pipeline-arrow">↓</div>
+            <div class="pipeline-step">HY-World Stage 1 → mesh + 33 trajectories</div>
+            <div class="pipeline-arrow">↓</div>
+            <div class="pipeline-step">Stage 2 → render.mp4 + render_mask.mp4</div>
+            <div class="pipeline-arrow">↓</div>
+            <div class="pipeline-step">Stage 3 → WorldStereo fills holes</div>
+            <div class="pipeline-arrow">↓</div>
+            <div class="pipeline-step">Stage 4 → 787 training frames</div>
+            <div class="pipeline-arrow">↓</div>
+            <div class="pipeline-step">Stage 5 → 3DGS checkpoint</div>
+            <div class="pipeline-arrow">↓</div>
+            <div class="pipeline-step highlight">Walkable 3D set</div>
+          </div>
+        </div>
+
+        <div class="table-wrap">
+          <table>
+            <thead><tr><th>Stage</th><th>Script</th><th>What happens</th></tr></thead>
+            <tbody>
+              <tr><td>1</td><td><code>traj_generate.py</code></td><td>Depth, mesh, navmesh, trajectories</td></tr>
+              <tr><td>2</td><td><code>traj_render.py</code></td><td>Point-splat conditioning videos</td></tr>
+              <tr><td>3</td><td><code>video_gen.py</code></td><td>WorldStereo inpainting</td></tr>
+              <tr><td>4</td><td><code>gen_gs_data.py</code></td><td>Prepare 3DGS training data</td></tr>
+              <tr><td>5</td><td><code>world_gs_trainer</code></td><td>Train for 8000 steps</td></tr>
+              <tr><td>6</td><td><code>extract_mesh.py</code></td><td><em>(not run yet)</em></td></tr>
+            </tbody>
+          </table>
+        </div>
+
+        <div class="figure-grid cols-2">
+          <div class="visual-card">
+            <img src="./media/01_input/panorama.png" alt="Input panorama">
+            <div class="visual-card-body">
+              <h4>Reference Panorama</h4>
+              <p>4-side stitched equirectangular input from real song frames</p>
+            </div>
+          </div>
+          <div class="visual-card">
+            <img src="./media/06_hunyuan_world/segmentation_vis.png" alt="Segmentation overlay">
+            <div class="visual-card-body">
+              <h4>Scene Understanding</h4>
+              <p>11 detected objects drive camera path planning</p>
+            </div>
+          </div>
+        </div>
+
+        <div class="code-block">
+          <button class="copy-btn" aria-label="Copy code">Copy</button>
+          <pre>camera.json (21 poses)
+    ↓  traj_render.py
+render.mp4 + render_mask.mp4   ← gray holes where PCD is sparse
+    ↓  video_gen.py (WorldStereo)
+worldstereo-memory-dmd_result.mp4   ← inpainted video
+    ↓  gen_gs_data.py
+787 training frames for 3DGS</pre>
+        </div>
+
+        <p>Run it: <code>pinga_set/run_mesh_pipeline.sh</code> — see <code>code/</code> for all scripts.</p>
+      </section>
+
+      <!-- 07 Challenges -->
+      <section id="challenges">
+        <span class="section-num">07</span>
+        <h2>Challenges and What Didn't Work</h2>
+        <p>Every failure pushed us toward <strong>better input preparation</strong> rather than a bigger model. The pattern is consistent across the project.</p>
+
+        <div class="table-wrap">
+          <table>
+            <thead><tr><th>Thing we tried</th><th>What happened</th></tr></thead>
+            <tbody>
+              <tr><td>COLMAP on raw footage</td><td>No usable sparse reconstruction — shots don't overlap</td></tr>
+              <tr><td>VGGT on raw song</td><td>Bad reconstruction — cuts kill correspondence</td></tr>
+              <tr><td>Depth Anything V3 on raw song</td><td>Per-frame depth OK, but views too sparse and non-overlapping to fuse</td></tr>
+              <tr><td>Single-frame HY-World</td><td>Would hallucinate most of the set</td></tr>
+              <tr><td>Raw PCD without panorama</td><td>Trajectories worked, inpainting quality was poor</td></tr>
+              <tr><td>WorldStereo on sparse trajectories</td><td>Holes remain — mask is soft guidance, not hard fill</td></tr>
+              <tr><td>DMD fast mode (4 denoising steps)</td><td>Fast but lower quality</td></tr>
+              <tr><td>Mesh extraction (Stage 6)</td><td>Not executed yet</td></tr>
+            </tbody>
+          </table>
+        </div>
+
+        <h3>Single-image vs. multi-view: a concrete example</h3>
+        <h4>What we tried</h4>
+        <p>Run the full HY-World pipeline on a single song frame expanded via HY-Pano 2.0.</p>
+        <h4>What happened</h4>
+        <p>The panorama looked plausible but ~75% was hallucinated. Downstream segmentation and WorldStereo outputs contradicted other shots in the song.</p>
+        <h4>Why it was insufficient</h4>
+        <p>Depth was guessed from invented geometry. A weak panorama poisons every downstream stage.</p>
+        <h4>What we changed</h4>
+        <p>Manual frame picking, wider view generation, MoGe depth, and hand-verified point-cloud stitching to build a panorama with photographic evidence in each direction.</p>
+
+        <div class="callout observation">
+          <div class="callout-label">Observation</div>
+          <p>The hardest part wasn't picking a model. It was <strong>designing a pipeline where each tool does one thing it's actually good at</strong> — humans pick frames and verify geometry, MoGe gives dense depth, HY-World builds mesh and plans paths, WorldStereo fills holes, 3DGS turns it all into a renderable scene.</p>
+        </div>
+      </section>
+
+      <!-- 08 Final Result -->
+      <section id="final-result">
+        <span class="section-num">08</span>
+        <h2>Final Result</h2>
+        <p>Everything below is real output from <code>pinga_set/</code>.</p>
+
+        <div class="figure-wide">
+          <figure>
+            <img src="./media/01_input/panorama.png" alt="Final input panorama of the Pinga courtyard">
+            <figcaption>Input panorama — the foundation for the entire reconstruction</figcaption>
+          </figure>
+        </div>
+
+        <div class="figure-grid cols-3">
+          <figure>
+            <img src="./media/04_keyframes/scene_bin_view0.png" alt="View bin 0">
+            <figcaption>View bin 0</figcaption>
+          </figure>
+          <figure>
+            <img src="./media/04_keyframes/scene_bin_view1.png" alt="View bin 1">
+            <figcaption>View bin 1</figcaption>
+          </figure>
+          <figure>
+            <img src="./media/04_keyframes/scene_bin_view2.png" alt="View bin 2">
+            <figcaption>View bin 2</figcaption>
+          </figure>
+        </div>
+
+        <div class="figure-grid stack">
+          <div class="media-block">
+            <p class="media-label">View1 — second cardinal bin</p>
+            <video src="./media/08_final/view1_worldstereo_result.mp4" controls preload="metadata"></video>
+          </div>
+          <div class="media-block">
+            <p class="media-label">Target tree — VLM picked the tree, camera flies toward it</p>
+            <video src="./media/08_final/target_tree_worldstereo_result.mp4" controls preload="metadata"></video>
+          </div>
+        </div>
+
+        <h3>Good vs. bad inpainting</h3>
+        <div class="figure-grid stack">
+          <div class="media-block">
+            <p class="media-label">✅ view0 — real reference frame, fewer holes</p>
+            <video src="./media/07_inpainting/view0_worldstereo_result.mp4" controls preload="metadata"></video>
+          </div>
+          <div class="media-block">
+            <p class="media-label">⚠️ wonder_7 — PCD-only start, many holes remain</p>
+            <video src="./media/07_inpainting/wonder7_worldstereo_result.mp4" controls preload="metadata"></video>
+          </div>
+        </div>
+
+        <h3>3D assets</h3>
+        <p>Open in MeshLab or CloudCompare:</p>
+        <ul>
+          <li><a href="./media/08_final/global_mesh.ply"><code>media/08_final/global_mesh.ply</code></a> (82 MB)</li>
+          <li><a href="./media/08_final/point_cloud_7999.ply"><code>media/08_final/point_cloud_7999.ply</code></a> (123 MB)</li>
+        </ul>
+      </section>
+
+      <!-- 09 Future -->
+      <section id="future">
+        <span class="section-num">09</span>
+        <h2>What Comes Next</h2>
+        <p>Stage 6 (<code>extract_mesh.py</code>) — extracting a mesh from the 3DGS checkpoint — wasn't run yet. The <code>gs_output/mesh/</code> directory doesn't exist. The primary mesh for now remains the Stage-1 <code>global_mesh.ply</code> (82 MB).</p>
+        <p>No single model eats a Bollywood song and spits out a 3D set. A chain of imperfect tools, with humans at the critical decision points, gets you most of the way there — but mesh extraction from the trained radiance field is the obvious next step.</p>
+
+        <h3>Checkpoints &amp; models</h3>
+        <p>Weights live in <code>pinga_set/</code> — symlinked under <code>media/checkpoints/</code> (not duplicated).</p>
+        <div class="table-wrap">
+          <table>
+            <thead><tr><th>Artifact</th><th>Path</th><th>Size</th><th>Used for</th></tr></thead>
+            <tbody>
+              <tr><td>Panorama depth</td><td><code>render_results/full_depth_prediction.pt</code></td><td>100 MB</td><td>Stage 1 init</td></tr>
+              <tr><td>3DGS checkpoint</td><td><code>gs_output/ckpts/ckpt_7999_rank0.pt</code></td><td>171 MB</td><td>Final radiance field</td></tr>
+              <tr><td>Sky depth cache</td><td><code>gs_output/sky_depth_cache.pt</code></td><td>522 MB</td><td>Training</td></tr>
+              <tr><td>Global mesh</td><td><code>render_results/global_mesh.ply</code></td><td>82 MB</td><td>Navigation / rendering</td></tr>
+              <tr><td>3DGS point cloud</td><td><code>gs_output/ply/point_cloud_7999.ply</code></td><td>123 MB</td><td>Visualization</td></tr>
+            </tbody>
+          </table>
+        </div>
+        <p>Other external models (downloaded at runtime): Qwen3-VL-8B (trajectory planning), WorldStereo (inpainting), HunyuanWorld-Mirror (depth bank), MoGe v2 (upstream depth).</p>
+        <p>Training config: <code>pinga_set/gs_output/cfg.yml</code> · Pipeline runner: <code>code/run_mesh_pipeline.sh</code> · Panorama generator: <code>code/panogen/</code></p>
+
+        <div class="callout important">
+          <div class="callout-label">Important</div>
+          <p>All media from <code>pinga_set/</code>. Code in <code>code/</code>. Raw movie frames and upstream keyframe picks aren't in this repo — only the HY-World pipeline outputs.</p>
+        </div>
+      </section>
+
+      <section id="references" class="references">
+        <h2>References</h2>
+        <ol class="ref-list">
+          <li class="ref-item">
+            <span class="ref-label">HY-World 2.0</span>
+            <span class="ref-desc">World generation, mesh, trajectories, and inpainting pipeline</span>
+            <a class="ref-link" href="https://github.com/Tencent-Hunyuan/HY-World-2.0" target="_blank" rel="noopener">github.com/Tencent-Hunyuan/HY-World-2.0</a>
+          </li>
+          <li class="ref-item">
+            <span class="ref-label">MoGe</span>
+            <span class="ref-desc">Monocular metric depth estimation for panorama stitching</span>
+            <a class="ref-link" href="https://github.com/microsoft/MoGe" target="_blank" rel="noopener">github.com/microsoft/MoGe</a>
+          </li>
+          <li class="ref-item">
+            <span class="ref-label">VGGT</span>
+            <span class="ref-desc">Visual Geometry Grounded Transformer — learned geometry baseline</span>
+            <a class="ref-link" href="https://github.com/facebookresearch/vggt" target="_blank" rel="noopener">github.com/facebookresearch/vggt</a>
+          </li>
+          <li class="ref-item">
+            <span class="ref-label">3D Gaussian Splatting</span>
+            <span class="ref-desc">Real-time radiance field rendering and final scene training</span>
+            <a class="ref-link" href="https://github.com/graphdeco-inria/gaussian-splatting" target="_blank" rel="noopener">github.com/graphdeco-inria/gaussian-splatting</a>
+          </li>
+        </ol>
+      </section>
+
+      <footer class="article-footer">
+        <p>Thanks for reading.</p>
+        <p style="margin-top:12px;"><a href="https://github.com/saisritejakuppaEros/SyntheticEnvGeneration">← Back to Repository</a></p>
+      </footer>
+    </article>
+  </div>
+
+  <div id="lightbox" class="lightbox" role="dialog" aria-modal="true" aria-label="Image preview" hidden>
+    <button class="lightbox-close" type="button" aria-label="Close preview">&times;</button>
+    <div class="lightbox-backdrop"></div>
+    <div class="lightbox-inner">
+      <img id="lightbox-img" src="" alt="">
+      <p id="lightbox-caption" class="lightbox-caption"></p>
+    </div>
+  </div>
+
+  <script>
+    (function () {
+      'use strict';
+
+      // Image lightbox
+      const lightbox = document.getElementById('lightbox');
+      const lightboxImg = document.getElementById('lightbox-img');
+      const lightboxCaption = document.getElementById('lightbox-caption');
+      const lightboxClose = lightbox.querySelector('.lightbox-close');
+      const lightboxBackdrop = lightbox.querySelector('.lightbox-backdrop');
+      let lastFocused = null;
+
+      function openLightbox(src, alt, caption) {
+        lastFocused = document.activeElement;
+        lightboxImg.src = src;
+        lightboxImg.alt = alt || '';
+        lightboxCaption.textContent = caption || '';
+        lightboxCaption.hidden = !caption;
+        lightbox.hidden = false;
+        lightbox.classList.add('open');
+        document.body.classList.add('lightbox-open');
+        lightboxClose.focus();
+      }
+
+      function closeLightbox() {
+        lightbox.classList.remove('open');
+        lightbox.hidden = true;
+        document.body.classList.remove('lightbox-open');
+        lightboxImg.src = '';
+        if (lastFocused) lastFocused.focus();
+      }
+
+      document.querySelectorAll('article img').forEach(function (img) {
+        img.classList.add('lightbox-trigger');
+        img.setAttribute('tabindex', '0');
+        img.setAttribute('role', 'button');
+        img.setAttribute('aria-label', 'View full size: ' + (img.alt || 'image'));
+
+        function activate() {
+          const figure = img.closest('figure');
+          const captionEl = figure ? figure.querySelector('figcaption') : null;
+          const caption = captionEl ? captionEl.textContent.trim() : '';
+          openLightbox(img.src, img.alt, caption);
+        }
+
+        img.addEventListener('click', activate);
+        img.addEventListener('keydown', function (e) {
+          if (e.key === 'Enter' || e.key === ' ') {
+            e.preventDefault();
+            activate();
+          }
+        });
+      });
+
+      lightboxClose.addEventListener('click', closeLightbox);
+      lightboxBackdrop.addEventListener('click', closeLightbox);
+      document.addEventListener('keydown', function (e) {
+        if (e.key === 'Escape' && lightbox.classList.contains('open')) closeLightbox();
+      });
+
+      // Reading progress
+      const progressBar = document.getElementById('reading-progress');
+      function updateProgress() {
+        const scrollTop = window.scrollY;
+        const docHeight = document.documentElement.scrollHeight - window.innerHeight;
+        const pct = docHeight > 0 ? Math.min(100, (scrollTop / docHeight) * 100) : 0;
+        progressBar.style.width = pct + '%';
+      }
+      window.addEventListener('scroll', updateProgress, { passive: true });
+      updateProgress();
+
+      // Mobile TOC toggle
+      const tocToggle = document.getElementById('toc-toggle');
+      const tocPanel = document.getElementById('toc-panel');
+      if (tocToggle && tocPanel) {
+        tocToggle.addEventListener('click', function () {
+          const open = tocPanel.classList.toggle('open');
+          tocToggle.setAttribute('aria-expanded', open);
+        });
+        tocPanel.querySelectorAll('a').forEach(function (link) {
+          link.addEventListener('click', function () {
+            tocPanel.classList.remove('open');
+            tocToggle.setAttribute('aria-expanded', 'false');
+          });
+        });
+      }
+
+      // Active TOC highlighting
+      const tocLinks = document.querySelectorAll('#toc-list a');
+      const sections = [];
+      tocLinks.forEach(function (link) {
+        const id = link.getAttribute('href').slice(1);
+        const el = document.getElementById(id);
+        if (el) sections.push({ id: id, el: el, link: link });
+      });
+
+      const observer = new IntersectionObserver(function (entries) {
+        entries.forEach(function (entry) {
+          if (entry.isIntersecting) {
+            tocLinks.forEach(function (l) { l.classList.remove('active'); });
+            const match = sections.find(function (s) { return s.id === entry.target.id; });
+            if (match) match.link.classList.add('active');
+          }
+        });
+      }, { rootMargin: '-20% 0px -60% 0px', threshold: 0 });
+
+      sections.forEach(function (s) { observer.observe(s.el); });
+
+      // Copy buttons
+      document.querySelectorAll('.copy-btn').forEach(function (btn) {
+        btn.addEventListener('click', function () {
+          const pre = btn.parentElement.querySelector('pre');
+          if (!pre) return;
+          navigator.clipboard.writeText(pre.textContent.trim()).then(function () {
+            btn.textContent = 'Copied!';
+            setTimeout(function () { btn.textContent = 'Copy'; }, 2000);
+          });
+        });
+      });
+    })();
+  </script>
+</body>
+</html>

@@ -1,0 +1,1 @@
+../../../hyworld2/worldgen/world_gs_trainer.py

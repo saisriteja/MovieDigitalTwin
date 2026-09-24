@@ -1,0 +1,1 @@
+../../../hyworld2/worldgen/gen_gs_data.py

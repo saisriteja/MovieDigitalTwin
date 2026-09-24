@@ -1,0 +1,1 @@
+../../../hyworld2/worldgen/gs/extract_mesh.py
