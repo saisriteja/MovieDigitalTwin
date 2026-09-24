@@ -1,1 +1,5 @@
-media/checkpoints
+# Large model weights (>100 MB — GitHub limit)
+media/checkpoints/
+
+# Large 3D assets (>100 MB)
+media/08_final/point_cloud_7999.ply
